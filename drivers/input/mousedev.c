@@ -67,7 +67,6 @@ struct mousedev {
 	struct device dev;
 	struct cdev cdev;
 	bool exist;
-	bool is_mixdev;
 
 	struct list_head mixdev_node;
 	bool opened_by_mixdev;
@@ -77,6 +76,9 @@ struct mousedev {
 	int old_x[4], old_y[4];
 	int frac_dx, frac_dy;
 	unsigned long touch;
+
+	int (*open_device)(struct mousedev *mousedev);
+	void (*close_device)(struct mousedev *mousedev);
 };
 
 enum mousedev_emul {
@@ -115,9 +117,6 @@ static unsigned char mousedev_imex_seq[] = { 0xf3, 200, 0xf3, 200, 0xf3, 80 };
 
 static struct mousedev *mousedev_mix;
 static LIST_HEAD(mousedev_mix_list);
-
-static void mixdev_open_devices(void);
-static void mixdev_close_devices(void);
 
 #define fx(i)  (mousedev->old_x[(mousedev->pkt_count - (i)) & 03])
 #define fy(i)  (mousedev->old_y[(mousedev->pkt_count - (i)) & 03])
@@ -428,9 +427,7 @@ static int mousedev_open_device(struct mousedev *mousedev)
 	if (retval)
 		return retval;
 
-	if (mousedev->is_mixdev)
-		mixdev_open_devices();
-	else if (!mousedev->exist)
+	if (!mousedev->exist)
 		retval = -ENODEV;
 	else if (!mousedev->open++) {
 		retval = input_open_device(&mousedev->handle);
@@ -446,9 +443,7 @@ static void mousedev_close_device(struct mousedev *mousedev)
 {
 	mutex_lock(&mousedev->mutex);
 
-	if (mousedev->is_mixdev)
-		mixdev_close_devices();
-	else if (mousedev->exist && !--mousedev->open)
+	if (mousedev->exist && !--mousedev->open)
 		input_close_device(&mousedev->handle);
 
 	mutex_unlock(&mousedev->mutex);
@@ -459,21 +454,29 @@ static void mousedev_close_device(struct mousedev *mousedev)
  * stream. Note that this function is called with mousedev_mix->mutex
  * held.
  */
-static void mixdev_open_devices(void)
+static int mixdev_open_devices(struct mousedev *mixdev)
 {
-	struct mousedev *mousedev;
+	int error;
 
-	if (mousedev_mix->open++)
-		return;
+	error = mutex_lock_interruptible(&mixdev->mutex);
+	if (error)
+		return error;
 
-	list_for_each_entry(mousedev, &mousedev_mix_list, mixdev_node) {
-		if (!mousedev->opened_by_mixdev) {
-			if (mousedev_open_device(mousedev))
-				continue;
+	if (!mixdev->open++) {
+		struct mousedev *mousedev;
 
-			mousedev->opened_by_mixdev = true;
+		list_for_each_entry(mousedev, &mousedev_mix_list, mixdev_node) {
+			if (!mousedev->opened_by_mixdev) {
+				if (mousedev_open_device(mousedev))
+					continue;
+
+				mousedev->opened_by_mixdev = true;
+			}
 		}
 	}
+
+	mutex_unlock(&mixdev->mutex);
+	return 0;
 }
 
 /*
@@ -481,19 +484,22 @@ static void mixdev_open_devices(void)
  * device. Note that this function is called with mousedev_mix->mutex
  * held.
  */
-static void mixdev_close_devices(void)
+static void mixdev_close_devices(struct mousedev *mixdev)
 {
-	struct mousedev *mousedev;
+	mutex_lock(&mixdev->mutex);
 
-	if (--mousedev_mix->open)
-		return;
+	if (!--mixdev->open) {
+		struct mousedev *mousedev;
 
-	list_for_each_entry(mousedev, &mousedev_mix_list, mixdev_node) {
-		if (mousedev->opened_by_mixdev) {
-			mousedev->opened_by_mixdev = false;
-			mousedev_close_device(mousedev);
+		list_for_each_entry(mousedev, &mousedev_mix_list, mixdev_node) {
+			if (mousedev->opened_by_mixdev) {
+				mousedev->opened_by_mixdev = false;
+				mousedev_close_device(mousedev);
+			}
 		}
 	}
+
+	mutex_unlock(&mixdev->mutex);
 }
 
 
@@ -522,7 +528,7 @@ static int mousedev_release(struct inode *inode, struct file *file)
 	mousedev_detach_client(mousedev, client);
 	kfree(client);
 
-	mousedev_close_device(mousedev);
+	mousedev->close_device(mousedev);
 
 	return 0;
 }
@@ -550,7 +556,7 @@ static int mousedev_open(struct inode *inode, struct file *file)
 	client->mousedev = mousedev;
 	mousedev_attach_client(mousedev, client);
 
-	error = mousedev_open_device(mousedev);
+	error = mousedev->open_device(mousedev);
 	if (error)
 		goto err_free_client;
 
@@ -806,8 +812,6 @@ static void mousedev_cleanup(struct mousedev *mousedev)
 	mousedev_mark_dead(mousedev);
 	mousedev_hangup(mousedev);
 
-	cdev_del(&mousedev->cdev);
-
 	/* mousedev is marked dead so no one else accesses mousedev->open */
 	if (mousedev->open)
 		input_close_device(handle);
@@ -861,16 +865,21 @@ static struct mousedev *mousedev_create(struct input_dev *dev,
 
 	if (mixdev) {
 		dev_set_name(&mousedev->dev, "mice");
+
+		mousedev->open_device = mixdev_open_devices;
+		mousedev->close_device = mixdev_close_devices;
 	} else {
 		int dev_no = minor;
 		/* Normalize device number if it falls into legacy range */
 		if (dev_no < MOUSEDEV_MINOR_BASE + MOUSEDEV_MINORS)
 			dev_no -= MOUSEDEV_MINOR_BASE;
 		dev_set_name(&mousedev->dev, "mouse%d", dev_no);
+
+		mousedev->open_device = mousedev_open_device;
+		mousedev->close_device = mousedev_close_device;
 	}
 
 	mousedev->exist = true;
-	mousedev->is_mixdev = mixdev;
 	mousedev->handle.dev = input_get_device(dev);
 	mousedev->handle.name = dev_name(&mousedev->dev);
 	mousedev->handle.handler = handler;
@@ -890,12 +899,8 @@ static struct mousedev *mousedev_create(struct input_dev *dev,
 	}
 
 	cdev_init(&mousedev->cdev, &mousedev_fops);
-	mousedev->cdev.kobj.parent = &mousedev->dev.kobj;
-	error = cdev_add(&mousedev->cdev, mousedev->dev.devt, 1);
-	if (error)
-		goto err_unregister_handle;
 
-	error = device_add(&mousedev->dev);
+	error = cdev_device_add(&mousedev->cdev, &mousedev->dev);
 	if (error)
 		goto err_cleanup_mousedev;
 
@@ -903,7 +908,6 @@ static struct mousedev *mousedev_create(struct input_dev *dev,
 
  err_cleanup_mousedev:
 	mousedev_cleanup(mousedev);
- err_unregister_handle:
 	if (!mixdev)
 		input_unregister_handle(&mousedev->handle);
  err_free_mousedev:
@@ -916,10 +920,10 @@ static struct mousedev *mousedev_create(struct input_dev *dev,
 
 static void mousedev_destroy(struct mousedev *mousedev)
 {
-	device_del(&mousedev->dev);
+	cdev_device_del(&mousedev->cdev, &mousedev->dev);
 	mousedev_cleanup(mousedev);
 	input_free_minor(MINOR(mousedev->dev.devt));
-	if (!mousedev->is_mixdev)
+	if (mousedev != mousedev_mix)
 		input_unregister_handle(&mousedev->handle);
 	put_device(&mousedev->dev);
 }

@@ -352,7 +352,7 @@ static inline void write_all_bytes(struct si_sm_data *bt)
 
 static inline int read_all_bytes(struct si_sm_data *bt)
 {
-	unsigned char i;
+	unsigned int i;
 
 	/*
 	 * length is "framing info", minimum = 4: NetFn, Seq, Cmd, cCode.
@@ -694,7 +694,7 @@ static int bt_size(void)
 	return sizeof(struct si_sm_data);
 }
 
-struct si_sm_handlers bt_smi_handlers = {
+const struct si_sm_handlers bt_smi_handlers = {
 	.init_data		= bt_init_data,
 	.start_transaction	= bt_start_transaction,
 	.get_result		= bt_get_result,

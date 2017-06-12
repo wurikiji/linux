@@ -66,11 +66,11 @@ void efx_nic_event_test_start(struct efx_channel *channel)
 	channel->efx->type->ev_test_generate(channel);
 }
 
-void efx_nic_irq_test_start(struct efx_nic *efx)
+int efx_nic_irq_test_start(struct efx_nic *efx)
 {
 	efx->last_irq_cpu = -1;
 	smp_wmb();
-	efx->type->irq_test_generate(efx);
+	return efx->type->irq_test_generate(efx);
 }
 
 /* Hook interrupt handler(s)
@@ -156,13 +156,15 @@ void efx_nic_fini_interrupt(struct efx_nic *efx)
 	efx->net_dev->rx_cpu_rmap = NULL;
 #endif
 
-	/* Disable MSI/MSI-X interrupts */
-	efx_for_each_channel(channel, efx)
-		free_irq(channel->irq, &efx->msi_context[channel->channel]);
-
-	/* Disable legacy interrupt */
-	if (efx->legacy_irq)
+	if (EFX_INT_MODE_USE_MSI(efx)) {
+		/* Disable MSI/MSI-X interrupts */
+		efx_for_each_channel(channel, efx)
+			free_irq(channel->irq,
+				 &efx->msi_context[channel->channel]);
+	} else {
+		/* Disable legacy interrupt */
 		free_irq(efx->legacy_irq, efx);
+	}
 }
 
 /* Register dump */
@@ -530,4 +532,3 @@ void efx_nic_fix_nodesc_drop_stat(struct efx_nic *efx, u64 *rx_nodesc_drops)
 	efx->rx_nodesc_drops_prev_state = !!(efx->net_dev->flags & IFF_UP);
 	*rx_nodesc_drops -= efx->rx_nodesc_drops_while_down;
 }
-

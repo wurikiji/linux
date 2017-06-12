@@ -18,6 +18,7 @@
  */
 #include <linux/sched.h>
 #include <linux/sched/rt.h>
+#include <linux/sched/debug.h>
 #include <linux/delay.h>
 #include <linux/export.h>
 #include <linux/spinlock.h>
@@ -66,12 +67,13 @@ void rt_mutex_debug_task_free(struct task_struct *task)
  * the deadlock. We print when we return. act_waiter can be NULL in
  * case of a remove waiter operation.
  */
-void debug_rt_mutex_deadlock(int detect, struct rt_mutex_waiter *act_waiter,
+void debug_rt_mutex_deadlock(enum rtmutex_chainwalk chwalk,
+			     struct rt_mutex_waiter *act_waiter,
 			     struct rt_mutex *lock)
 {
 	struct task_struct *task;
 
-	if (!debug_locks || detect || !act_waiter)
+	if (!debug_locks || chwalk == RT_MUTEX_FULL_CHAINWALK || !act_waiter)
 		return;
 
 	task = rt_mutex_owner(act_waiter->lock);
@@ -100,10 +102,11 @@ void debug_rt_mutex_print_deadlock(struct rt_mutex_waiter *waiter)
 		return;
 	}
 
-	printk("\n============================================\n");
-	printk(  "[ BUG: circular locking deadlock detected! ]\n");
-	printk("%s\n", print_tainted());
-	printk(  "--------------------------------------------\n");
+	pr_warn("\n");
+	pr_warn("============================================\n");
+	pr_warn("WARNING: circular locking deadlock detected!\n");
+	pr_warn("%s\n", print_tainted());
+	pr_warn("--------------------------------------------\n");
 	printk("%s/%d is deadlocking current task %s/%d\n\n",
 	       task->comm, task_pid_nr(task),
 	       current->comm, task_pid_nr(current));
@@ -170,14 +173,5 @@ void debug_rt_mutex_init(struct rt_mutex *lock, const char *name)
 	 */
 	debug_check_no_locks_freed((void *)lock, sizeof(*lock));
 	lock->name = name;
-}
-
-void
-rt_mutex_deadlock_account_lock(struct rt_mutex *lock, struct task_struct *task)
-{
-}
-
-void rt_mutex_deadlock_account_unlock(struct task_struct *task)
-{
 }
 

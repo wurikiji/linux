@@ -134,6 +134,7 @@
 
 /* RTC_CTRL_REG bitfields */
 #define TPS65910_RTC_CTRL_STOP_RTC			0x01 /*0=stop, 1=run */
+#define TPS65910_RTC_CTRL_AUTO_COMP			0x04
 #define TPS65910_RTC_CTRL_GET_TIME			0x40
 
 /* RTC_STATUS_REG bitfields */
@@ -892,7 +893,7 @@ struct tps65910 {
 	struct device *dev;
 	struct i2c_client *i2c_client;
 	struct regmap *regmap;
-	unsigned int id;
+	unsigned long id;
 
 	/* Client devices */
 	struct tps65910_pmic *pmic;

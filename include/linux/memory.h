@@ -35,7 +35,7 @@ struct memory_block {
 };
 
 int arch_get_memory_phys_device(unsigned long start_pfn);
-unsigned long __weak memory_block_size_bytes(void);
+unsigned long memory_block_size_bytes(void);
 
 /* These states are exposed to userspace as text strings in sysfs */
 #define	MEM_ONLINE		(1<<0) /* exposed to userspace */
@@ -135,17 +135,6 @@ extern struct memory_block *find_memory_block(struct mem_section *);
 #define register_hotmemory_notifier(nb)    ({ (void)(nb); 0; })
 #define unregister_hotmemory_notifier(nb)  ({ (void)(nb); })
 #endif
-
-/*
- * 'struct memory_accessor' is a generic interface to provide
- * in-kernel access to persistent memory such as i2c or SPI EEPROMs
- */
-struct memory_accessor {
-	ssize_t (*read)(struct memory_accessor *, char *buf, off_t offset,
-			size_t count);
-	ssize_t (*write)(struct memory_accessor *, const char *buf,
-			 off_t offset, size_t count);
-};
 
 /*
  * Kernel text modification mutex, used for code patching. Users of this lock
